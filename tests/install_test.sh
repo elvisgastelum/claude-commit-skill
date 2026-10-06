@@ -38,6 +38,7 @@ check "exactly one managed block" "[ \"\$(grep -c '$BEGIN_RE' '$d/CLAUDE.md')\" 
 
 # Edits inside the block are resynced.
 sed -i.tmp 's/NEVER add/sometimes add/' "$d/CLAUDE.md" && rm -f "$d/CLAUDE.md.tmp"
+check "tamper edit landed inside the block" "grep -q 'sometimes add' '$d/CLAUDE.md'"
 run "$d"
 check "edits inside the block are overwritten" "[ \"\$(cat '$d/CLAUDE.md' '$d/settings.json' | cksum)\" = '$before' ]"
 

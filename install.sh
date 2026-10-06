@@ -54,7 +54,7 @@ replace_if_changed() { # replace_if_changed <new> <dest>: back up and rewrite de
   fi
   [ -f "$2" ] && cp "$2" "$2.bak.$(date +%Y%m%d%H%M%S)"
   # Write through instead of mv so a symlinked dest (e.g. from a dotfiles repo) stays a symlink.
-  cat "$1" > "$2"
+  cat "$1" > "$2" || die "failed to write $2"
 }
 
 update_settings() { # update_settings <jq filter>
