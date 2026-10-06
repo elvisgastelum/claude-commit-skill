@@ -50,4 +50,5 @@ Removes the skill, the hook file, the hook entry, and the managed block in `~/.c
 git clone https://github.com/elvisgastelum/claude-commit-skill
 cd claude-commit-skill
 ./install.sh   # copies local files instead of downloading
+./tests/install_test.sh   # installs into throwaway dirs and checks idempotency (needs jq)
 ```

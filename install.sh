@@ -30,6 +30,9 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-commit-skill.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
 # Use local files when run from a clone, otherwise download them.
 SRC_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/skills/commit/SKILL.md" ]; then
@@ -45,19 +48,18 @@ fetch() { # fetch <repo-relative-path> <dest>
   fi
 }
 
-replace_if_changed() { # replace_if_changed <new> <dest>: back up and replace dest only when content differs
+replace_if_changed() { # replace_if_changed <new> <dest>: back up and rewrite dest only when content differs
   if [ -f "$2" ] && cmp -s "$1" "$2"; then
-    rm -f "$1"
     return 1
   fi
   [ -f "$2" ] && cp "$2" "$2.bak.$(date +%Y%m%d%H%M%S)"
-  mv "$1" "$2"
+  # Write through instead of mv so a symlinked dest (e.g. from a dotfiles repo) stays a symlink.
+  cat "$1" > "$2"
 }
 
 update_settings() { # update_settings <jq filter>
-  local tmp
-  tmp="$(mktemp)"
-  jq "$1" --arg hook "$HOOK_PATH" "$SETTINGS" > "$tmp" || { rm -f "$tmp"; die "failed to update $SETTINGS"; }
+  local tmp="$TMP_DIR/settings.json"
+  jq "$1" --arg hook "$HOOK_PATH" "$SETTINGS" > "$tmp" || die "failed to update $SETTINGS"
   replace_if_changed "$tmp" "$SETTINGS" || info "$SETTINGS already up to date"
 }
 
@@ -66,16 +68,19 @@ check_block_markers() { # exits unless MEMORY has no block or exactly one well-f
   local b e
   b="$(grep -Fxc "$BLOCK_BEGIN" "$MEMORY" || true)"
   e="$(grep -Fxc "$BLOCK_END" "$MEMORY" || true)"
-  { [ "$b" = 0 ] && [ "$e" = 0 ]; } || { [ "$b" = 1 ] && [ "$e" = 1 ]; } \
-    || die "$MEMORY has a damaged claude-commit-skill block; fix the BEGIN/END markers and re-run."
+  [ "$b" = 0 ] && [ "$e" = 0 ] && return 0
+  if [ "$b" = 1 ] && [ "$e" = 1 ] \
+    && [ "$(grep -Fxn "$BLOCK_BEGIN" "$MEMORY" | cut -d: -f1)" -lt "$(grep -Fxn "$BLOCK_END" "$MEMORY" | cut -d: -f1)" ]; then
+    return 0
+  fi
+  die "$MEMORY has a damaged claude-commit-skill block; fix the BEGIN/END markers and re-run."
 }
 
 sync_instructions() { # writes instructions/attribution.md into a managed block of ~/.claude/CLAUDE.md
-  local src tmp
-  src="$(mktemp)"
-  tmp="$(mktemp)"
-  fetch instructions/attribution.md "$src"
+  local src="$TMP_DIR/attribution.md" tmp="$TMP_DIR/CLAUDE.md"
   check_block_markers
+  fetch instructions/attribution.md "$src"
+  [ -z "$(tail -c 1 "$src")" ] || echo >> "$src"
   if [ -f "$MEMORY" ] && grep -Fxq "$BLOCK_BEGIN" "$MEMORY"; then
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v src="$src" '
       $0 == b { print; while ((getline l < src) > 0) print l; skip = 1; next }
@@ -89,7 +94,6 @@ sync_instructions() { # writes instructions/attribution.md into a managed block 
     fi
     { echo "$BLOCK_BEGIN"; cat "$src"; echo "$BLOCK_END"; } >> "$tmp"
   fi
-  rm -f "$src"
   mkdir -p "$CLAUDE_DIR"
   if replace_if_changed "$tmp" "$MEMORY"; then
     info "Synced attribution instructions into $MEMORY"
@@ -100,9 +104,7 @@ sync_instructions() { # writes instructions/attribution.md into a managed block 
 
 remove_instructions() {
   [ -f "$MEMORY" ] && grep -Fxq "$BLOCK_BEGIN" "$MEMORY" || return 0
-  check_block_markers
-  local tmp
-  tmp="$(mktemp)"
+  local tmp="$TMP_DIR/CLAUDE.md"
   awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
     $0 == b { skip = 1; next }
     $0 == e { skip = 0; next }
@@ -113,6 +115,7 @@ remove_instructions() {
 }
 
 uninstall() {
+  check_block_markers # fail before removing anything, so a damaged block never leaves a partial uninstall
   info "Removing $SKILL_DIR and $HOOK_PATH"
   rm -rf "$SKILL_DIR"
   rm -f "$HOOK_PATH"
